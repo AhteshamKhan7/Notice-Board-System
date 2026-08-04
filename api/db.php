@@ -1,141 +1,213 @@
 <?php
-// MySQL connection settings.
-// Support Environment Variables for Cloud Hosting (Vercel / Render / Railway) with local XAMPP fallback
+// MySQL / SQLite dual-mode connection handler.
+// Automatically falls back to SQLite if MySQL host is unavailable or times out.
+
 $dbHost = getenv('DB_HOST') ?: '127.0.0.1';
 $dbUser = getenv('DB_USER') ?: 'root';
 $dbPass = getenv('DB_PASS') !== false ? getenv('DB_PASS') : '';
 $dbName = getenv('DB_NAME') ?: 'notice_board';
 $dbPort = getenv('DB_PORT') ? (int)getenv('DB_PORT') : 3306;
 
-function dbConnect() {
-    global $dbHost, $dbUser, $dbPass, $dbName, $dbPort;
+class SQLiteStmt {
+    private $stmt;
+    private $params = [];
 
-    mysqli_report(MYSQLI_REPORT_OFF);
+    public function __construct($stmt) {
+        $this->stmt = $stmt;
+    }
 
-    try {
-        $mysqli = mysqli_init();
-        if (!$mysqli) {
-            throw new Exception('mysqli_init failed');
-        }
+    public function bind_param($types, ...$vars) {
+        $this->params = $vars;
+        return true;
+    }
 
-        // Set 8-second connection timeout
-        $mysqli->options(MYSQLI_OPT_CONNECT_TIMEOUT, 8);
-
-        // Enable SSL for cloud hosts (Aiven, TiDB, Clever Cloud, etc.)
-        $flags = 0;
-        $hostLower = strtolower($dbHost);
-        if (getenv('DB_SSL') === 'true' || strpos($hostLower, 'aiven') !== false || strpos($hostLower, 'tidb') !== false || strpos($hostLower, 'clever') !== false) {
-            $mysqli->ssl_set(NULL, NULL, NULL, NULL, NULL);
-            $flags = MYSQLI_CLIENT_SSL_DONT_VERIFY_SERVER_CERT;
-        }
-
-        $connected = @$mysqli->real_connect($dbHost, $dbUser, $dbPass, '', (int)$dbPort, NULL, $flags);
-        
-        // Fallback retry without SSL if initial SSL attempt failed
-        if (!$connected && $flags !== 0) {
-            $connected = @$mysqli->real_connect($dbHost, $dbUser, $dbPass, '', (int)$dbPort);
-        }
-
-        if (!$connected) {
-            throw new Exception('Connection to MySQL failed: ' . ($mysqli->connect_error ?: 'Connection timed out or refused.'));
-        }
-
-        $mysqli->set_charset('utf8mb4');
-
+    public function execute() {
         try {
-            $mysqli->select_db($dbName);
+            return $this->stmt->execute($this->params);
         } catch (Throwable $e) {
-            $createDbSql = "CREATE DATABASE IF NOT EXISTS `$dbName` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci";
-            $mysqli->query($createDbSql);
-            $mysqli->select_db($dbName);
+            return false;
         }
+    }
 
-        // 1. Create admins table first
-        $createAdminsSql = "CREATE TABLE IF NOT EXISTS `admins` (
-            `id` INT AUTO_INCREMENT PRIMARY KEY,
-            `username` VARCHAR(50) NOT NULL UNIQUE,
-            `password_hash` VARCHAR(255) NOT NULL,
-            `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+    public function get_result() {
+        return new SQLiteResult($this->stmt);
+    }
 
-        if (!$mysqli->query($createAdminsSql)) {
-            throw new Exception('Failed to create admins table: ' . $mysqli->error);
+    public function store_result() {
+        return true;
+    }
+
+    public function close() {
+        return true;
+    }
+
+    public function __get($name) {
+        if ($name === 'num_rows') {
+            return $this->stmt->rowCount();
         }
+        return 0;
+    }
+}
 
-        // 2. Create users table with foreign key to admins
-        $createTableSql = "CREATE TABLE IF NOT EXISTS `users` (
-            `id` INT AUTO_INCREMENT PRIMARY KEY,
-            `name` VARCHAR(100) NOT NULL,
-            `email` VARCHAR(100) NOT NULL,
-            `department` VARCHAR(50) DEFAULT 'All',
-            `message` TEXT NOT NULL,
-            `is_urgent` TINYINT(1) DEFAULT 0,
-            `attachment_path` VARCHAR(255) NULL,
-            `admin_id` INT NULL,
-            `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (`admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+class SQLiteResult {
+    private $rows = [];
+    private $index = 0;
 
-        if (!$mysqli->query($createTableSql)) {
-            throw new Exception('Failed to create users table: ' . $mysqli->error);
+    public function __construct($stmt) {
+        if ($stmt instanceof PDOStatement) {
+            $this->rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
         }
+    }
 
-        // 3. ALTER TABLE for existing users table
-        $checkColumnSql = "SHOW COLUMNS FROM `users` LIKE 'admin_id'";
-        $columnExists = $mysqli->query($checkColumnSql);
-        if ($columnExists && $columnExists->num_rows == 0) {
-            $alterSql = "ALTER TABLE `users` 
-                         ADD COLUMN `admin_id` INT NULL AFTER `message`,
-                         ADD CONSTRAINT `fk_admin_id` FOREIGN KEY (`admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL";
-            $mysqli->query($alterSql);
+    public function fetch_assoc() {
+        if ($this->index < count($this->rows)) {
+            return $this->rows[$this->index++];
         }
+        return null;
+    }
 
-        $checkDeptSql = "SHOW COLUMNS FROM `users` LIKE 'department'";
-        $deptExists = $mysqli->query($checkDeptSql);
-        if ($deptExists && $deptExists->num_rows == 0) {
-            $alterDeptSql = "ALTER TABLE `users` ADD COLUMN `department` VARCHAR(50) DEFAULT 'All' AFTER `email`";
-            $mysqli->query($alterDeptSql);
+    public function fetch_row() {
+        $assoc = $this->fetch_assoc();
+        return $assoc ? array_values($assoc) : null;
+    }
+
+    public function __get($name) {
+        if ($name === 'num_rows') {
+            return count($this->rows);
         }
+        return 0;
+    }
+}
 
-        $checkUrgentSql = "SHOW COLUMNS FROM `users` LIKE 'is_urgent'";
-        $urgentExists = $mysqli->query($checkUrgentSql);
-        if ($urgentExists && $urgentExists->num_rows == 0) {
-            $alterUrgentSql = "ALTER TABLE `users` ADD COLUMN `is_urgent` TINYINT(1) DEFAULT 0 AFTER `message`";
-            $mysqli->query($alterUrgentSql);
+class SQLiteDB {
+    private $pdo;
+    public $error = '';
+    public $connect_error = null;
+
+    public function __construct($dbFile) {
+        $this->pdo = new PDO('sqlite:' . $dbFile);
+        $this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $this->pdo->exec("PRAGMA foreign_keys = ON;");
+    }
+
+    public function query($sql) {
+        try {
+            $sql = str_replace('INT AUTO_INCREMENT PRIMARY KEY', 'INTEGER PRIMARY KEY AUTOINCREMENT', $sql);
+            $sql = str_replace('TINYINT(1)', 'INTEGER', $sql);
+            $sql = str_replace('ENGINE=InnoDB DEFAULT CHARSET=utf8mb4', '', $sql);
+            $sql = preg_replace('/AFTER `\w+`/', '', $sql);
+            $sql = preg_replace('/ADD CONSTRAINT `\w+` FOREIGN KEY [^;]+/', '', $sql);
+
+            $stmt = $this->pdo->query($sql);
+            if (!$stmt) return false;
+            return new SQLiteResult($stmt);
+        } catch (Throwable $e) {
+            $this->error = $e->getMessage();
+            return false;
         }
+    }
 
-        $checkAttachSql = "SHOW COLUMNS FROM `users` LIKE 'attachment_path'";
-        $attachExists = $mysqli->query($checkAttachSql);
-        if ($attachExists && $attachExists->num_rows == 0) {
-            $alterAttachSql = "ALTER TABLE `users` ADD COLUMN `attachment_path` VARCHAR(255) NULL AFTER `is_urgent`";
-            $mysqli->query($alterAttachSql);
+    public function prepare($sql) {
+        try {
+            $sql = str_replace('INT AUTO_INCREMENT PRIMARY KEY', 'INTEGER PRIMARY KEY AUTOINCREMENT', $sql);
+            $stmt = $this->pdo->prepare($sql);
+            return new SQLiteStmt($stmt);
+        } catch (Throwable $e) {
+            $this->error = $e->getMessage();
+            return false;
         }
+    }
 
-        // Insert default admin if no admins exist
-        $result = $mysqli->query("SELECT COUNT(*) FROM admins");
-        if ($result && $result->fetch_row()[0] == 0) {
+    public function select_db($name) { return true; }
+    public function set_charset($charset) { return true; }
+    public function close() { return true; }
+}
+
+function initTables($db) {
+    // 1. Admins Table
+    $db->query("CREATE TABLE IF NOT EXISTS admins (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username VARCHAR(50) NOT NULL UNIQUE,
+        password_hash VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+
+    // 2. Users Table
+    $db->query("CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name VARCHAR(100) NOT NULL,
+        email VARCHAR(100) NOT NULL,
+        department VARCHAR(50) DEFAULT 'All',
+        message TEXT NOT NULL,
+        is_urgent INTEGER DEFAULT 0,
+        attachment_path VARCHAR(255) NULL,
+        admin_id INT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+
+    // Insert default admin if no admins exist
+    $res = $db->query("SELECT COUNT(*) FROM admins");
+    if ($res) {
+        $row = $res->fetch_row();
+        if ($row && $row[0] == 0) {
             $defaultUser = 'admin';
             $defaultPass = password_hash('password123', PASSWORD_DEFAULT);
-            $stmt = $mysqli->prepare("INSERT INTO admins (username, password_hash) VALUES (?, ?)");
+            $stmt = $db->prepare("INSERT INTO admins (username, password_hash) VALUES (?, ?)");
             if ($stmt) {
                 $stmt->bind_param("ss", $defaultUser, $defaultPass);
                 $stmt->execute();
                 $stmt->close();
             }
         }
-
-        return $mysqli;
-    } catch (Throwable $e) {
-        die("<div style='font-family: Inter, Arial, sans-serif; max-width: 680px; margin: 60px auto; padding: 28px; border: 1px solid #fecaca; background: #fef2f2; border-radius: 16px; color: #991b1b; line-height: 1.6; box-shadow: 0 10px 25px rgba(0,0,0,0.05);'>"
-            . "<h2 style='margin-top:0; color: #7f1d1d;'>⚠️ Database Connection Error</h2>"
-            . "<p><strong>Error Details:</strong> " . htmlspecialchars($e->getMessage()) . "</p>"
-            . "<hr style='border: 0; border-top: 1px solid #fca5a5; margin: 18px 0;'>"
-            . "<h3 style='margin-bottom: 8px; color: #7f1d1d;'>Troubleshooting 'Connection Timed Out':</h3>"
-            . "<ol style='margin-left: 20px; font-size: 0.95rem;'>"
-            . "<li><strong>IP Whitelist / Firewall:</strong> In your cloud database dashboard (Aiven, TiDB, Clever Cloud, Railway), check <em>IP Allow List</em> / <em>Firewall Rules</em> and set it to <code>0.0.0.0/0</code> (Allow all incoming IP addresses).</li>"
-            . "<li><strong>Check DB_PORT:</strong> Ensure your <code>DB_PORT</code> in Vercel matches your cloud host (e.g. Aiven uses custom ports like <code>25681</code>, not standard <code>3306</code>).</li>"
-            . "<li><strong>Check DB_HOST & User/Pass:</strong> Make sure there are no trailing spaces or typos in your Vercel Environment Variables.</li>"
-            . "</ol>"
-            . "</div>");
     }
+}
+
+function dbConnect() {
+    global $dbHost, $dbUser, $dbPass, $dbName, $dbPort;
+
+    mysqli_report(MYSQLI_REPORT_OFF);
+
+    // Try MySQL if DB_HOST is set and not localhost
+    $hasCustomHost = (getenv('DB_HOST') && getenv('DB_HOST') !== '127.0.0.1');
+
+    if ($hasCustomHost) {
+        try {
+            $mysqli = mysqli_init();
+            if ($mysqli) {
+                $mysqli->options(MYSQLI_OPT_CONNECT_TIMEOUT, 3);
+                $flags = 0;
+                $hostLower = strtolower($dbHost);
+                if (getenv('DB_SSL') === 'true' || strpos($hostLower, 'aiven') !== false || strpos($hostLower, 'tidb') !== false || strpos($hostLower, 'clever') !== false) {
+                    $mysqli->ssl_set(NULL, NULL, NULL, NULL, NULL);
+                    $flags = MYSQLI_CLIENT_SSL_DONT_VERIFY_SERVER_CERT;
+                }
+
+                $connected = @$mysqli->real_connect($dbHost, $dbUser, $dbPass, '', (int)$dbPort, NULL, $flags);
+                if (!$connected && $flags !== 0) {
+                    $connected = @$mysqli->real_connect($dbHost, $dbUser, $dbPass, '', (int)$dbPort);
+                }
+
+                if ($connected) {
+                    $mysqli->set_charset('utf8mb4');
+                    try {
+                        $mysqli->select_db($dbName);
+                    } catch (Throwable $e) {
+                        $mysqli->query("CREATE DATABASE IF NOT EXISTS `$dbName` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+                        $mysqli->select_db($dbName);
+                    }
+                    initTables($mysqli);
+                    return $mysqli;
+                }
+            }
+        } catch (Throwable $e) {
+            // Connection failed/timed out, fall through to SQLite
+        }
+    }
+
+    // Zero-Setup SQLite Fallback
+    $dbDir = sys_get_temp_dir();
+    $dbFile = $dbDir . '/notice_board.sqlite';
+    $sqlite = new SQLiteDB($dbFile);
+    initTables($sqlite);
+    return $sqlite;
 }
