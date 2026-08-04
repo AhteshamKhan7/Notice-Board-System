@@ -89,6 +89,15 @@ $mysqli->close();
             padding: 0;
             box-sizing: border-box;
             font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        button, a, input, select, textarea {
+            touch-action: manipulation;
+        }
+
+        button:active, a.submit-btn:active, a.view-notices:active, a.login-btn:active, .card:active {
+            transform: scale(0.97) !important;
         }
 
         body, .navbar, .card, .form-control, .submit-btn, .view-notices, .modal, .toast {
