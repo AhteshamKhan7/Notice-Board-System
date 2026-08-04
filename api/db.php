@@ -13,9 +13,31 @@ function dbConnect() {
     mysqli_report(MYSQLI_REPORT_OFF);
 
     try {
-        $mysqli = @new mysqli($dbHost, $dbUser, $dbPass, '', $dbPort);
-        if ($mysqli->connect_error) {
-            throw new Exception('Connection to MySQL failed: ' . $mysqli->connect_error);
+        $mysqli = mysqli_init();
+        if (!$mysqli) {
+            throw new Exception('mysqli_init failed');
+        }
+
+        // Set 8-second connection timeout
+        $mysqli->options(MYSQLI_OPT_CONNECT_TIMEOUT, 8);
+
+        // Enable SSL for cloud hosts (Aiven, TiDB, Clever Cloud, etc.)
+        $flags = 0;
+        $hostLower = strtolower($dbHost);
+        if (getenv('DB_SSL') === 'true' || strpos($hostLower, 'aiven') !== false || strpos($hostLower, 'tidb') !== false || strpos($hostLower, 'clever') !== false) {
+            $mysqli->ssl_set(NULL, NULL, NULL, NULL, NULL);
+            $flags = MYSQLI_CLIENT_SSL_DONT_VERIFY_SERVER_CERT;
+        }
+
+        $connected = @$mysqli->real_connect($dbHost, $dbUser, $dbPass, '', (int)$dbPort, NULL, $flags);
+        
+        // Fallback retry without SSL if initial SSL attempt failed
+        if (!$connected && $flags !== 0) {
+            $connected = @$mysqli->real_connect($dbHost, $dbUser, $dbPass, '', (int)$dbPort);
+        }
+
+        if (!$connected) {
+            throw new Exception('Connection to MySQL failed: ' . ($mysqli->connect_error ?: 'Connection timed out or refused.'));
         }
 
         $mysqli->set_charset('utf8mb4');
@@ -28,7 +50,7 @@ function dbConnect() {
             $mysqli->select_db($dbName);
         }
 
-        // 1. Create admins table first (so users can reference it)
+        // 1. Create admins table first
         $createAdminsSql = "CREATE TABLE IF NOT EXISTS `admins` (
             `id` INT AUTO_INCREMENT PRIMARY KEY,
             `username` VARCHAR(50) NOT NULL UNIQUE,
@@ -58,7 +80,7 @@ function dbConnect() {
             throw new Exception('Failed to create users table: ' . $mysqli->error);
         }
 
-        // 3. ALTER TABLE for existing users table (if admin_id or department doesn't exist yet)
+        // 3. ALTER TABLE for existing users table
         $checkColumnSql = "SHOW COLUMNS FROM `users` LIKE 'admin_id'";
         $columnExists = $mysqli->query($checkColumnSql);
         if ($columnExists && $columnExists->num_rows == 0) {
@@ -104,20 +126,16 @@ function dbConnect() {
 
         return $mysqli;
     } catch (Throwable $e) {
-        die("<div style='font-family: Inter, Arial, sans-serif; max-width: 650px; margin: 60px auto; padding: 28px; border: 1px solid #fecaca; background: #fef2f2; border-radius: 16px; color: #991b1b; line-height: 1.6; box-shadow: 0 10px 25px rgba(0,0,0,0.05);'>"
-            . "<h2 style='margin-top:0; color: #7f1d1d;'>⚠️ Database Connection Failed</h2>"
+        die("<div style='font-family: Inter, Arial, sans-serif; max-width: 680px; margin: 60px auto; padding: 28px; border: 1px solid #fecaca; background: #fef2f2; border-radius: 16px; color: #991b1b; line-height: 1.6; box-shadow: 0 10px 25px rgba(0,0,0,0.05);'>"
+            . "<h2 style='margin-top:0; color: #7f1d1d;'>⚠️ Database Connection Error</h2>"
             . "<p><strong>Error Details:</strong> " . htmlspecialchars($e->getMessage()) . "</p>"
             . "<hr style='border: 0; border-top: 1px solid #fca5a5; margin: 18px 0;'>"
-            . "<h3 style='margin-bottom: 8px; color: #7f1d1d;'>How to Fix on Vercel:</h3>"
-            . "<p>Vercel runs on cloud serverless functions and cannot connect to local <code>127.0.0.1</code> (XAMPP). You need a cloud MySQL database (e.g. Aiven, TiDB, Clever Cloud, Railway, PlanetScale, or Supabase MySQL).</p>"
-            . "<p>Set the following variables in <strong>Vercel Dashboard &rarr; Settings &rarr; Environment Variables</strong>:</p>"
-            . "<ul style='margin-left: 20px; font-family: monospace; font-size: 0.95rem;'>"
-            . "<li><strong>DB_HOST</strong> (e.g. mysql-xxx.aivencloud.com)</li>"
-            . "<li><strong>DB_USER</strong></li>"
-            . "<li><strong>DB_PASS</strong></li>"
-            . "<li><strong>DB_NAME</strong> (e.g. notice_board)</li>"
-            . "<li><strong>DB_PORT</strong> (e.g. 3306)</li>"
-            . "</ul>"
+            . "<h3 style='margin-bottom: 8px; color: #7f1d1d;'>Troubleshooting 'Connection Timed Out':</h3>"
+            . "<ol style='margin-left: 20px; font-size: 0.95rem;'>"
+            . "<li><strong>IP Whitelist / Firewall:</strong> In your cloud database dashboard (Aiven, TiDB, Clever Cloud, Railway), check <em>IP Allow List</em> / <em>Firewall Rules</em> and set it to <code>0.0.0.0/0</code> (Allow all incoming IP addresses).</li>"
+            . "<li><strong>Check DB_PORT:</strong> Ensure your <code>DB_PORT</code> in Vercel matches your cloud host (e.g. Aiven uses custom ports like <code>25681</code>, not standard <code>3306</code>).</li>"
+            . "<li><strong>Check DB_HOST & User/Pass:</strong> Make sure there are no trailing spaces or typos in your Vercel Environment Variables.</li>"
+            . "</ol>"
             . "</div>");
     }
 }
