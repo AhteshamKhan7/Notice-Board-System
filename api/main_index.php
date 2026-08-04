@@ -1,6 +1,6 @@
 <?php
 session_start();
-require_once 'db.php';
+require_once __DIR__ . '/db.php';
 
 $mysqli = dbConnect();
 $message = '';
@@ -15,7 +15,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $attachmentPath = null;
     if (isset($_FILES['attachment']) && $_FILES['attachment']['error'] === UPLOAD_ERR_OK) {
         $uploadDir = __DIR__ . '/../uploads/';
-        if (!is_dir($uploadDir)) @mkdir($uploadDir, 0755, true);
+        if (!is_dir($uploadDir) && !@mkdir($uploadDir, 0755, true)) {
+            $uploadDir = sys_get_temp_dir() . '/uploads/';
+            if (!is_dir($uploadDir)) @mkdir($uploadDir, 0755, true);
+        }
         $fileName = time() . '_' . basename($_FILES['attachment']['name']);
         $targetFilePath = $uploadDir . $fileName;
         $dbAttachmentPath = 'uploads/' . $fileName;
