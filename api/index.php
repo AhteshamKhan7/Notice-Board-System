@@ -1,14 +1,52 @@
 <?php
 // Entry point for Vercel Serverless Function (vercel-php)
-$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-$path = ltrim($uri, '/');
-
-// Default to index.php if root path requested
-if ($path === '' || $path === 'index.php') {
-    require __DIR__ . '/../index.php';
-} elseif (file_exists(__DIR__ . '/../' . $path) && is_file(__DIR__ . '/../' . $path)) {
-    require __DIR__ . '/../' . $path;
-} else {
-    http_response_code(404);
-    echo "404 Not Found";
+$rootDir = realpath(__DIR__ . '/..');
+if ($rootDir) {
+    chdir($rootDir);
 }
+
+$requestUri = $_SERVER['REQUEST_URI'] ?? '/';
+$path = parse_url($requestUri, PHP_URL_PATH) ?? '/';
+$path = urldecode(ltrim($path, '/'));
+
+// 1. Root path or index requests
+if ($path === '' || $path === 'index' || $path === 'index.php') {
+    require_once 'index.php';
+    exit;
+}
+
+// 2. Direct match for file (e.g. /results.php, /uploads/...)
+if (file_exists($path) && is_file($path)) {
+    $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+    if ($ext === 'php') {
+        require_once $path;
+        exit;
+    } else {
+        $mimeTypes = [
+            'pdf'  => 'application/pdf',
+            'png'  => 'image/png',
+            'jpg'  => 'image/jpeg',
+            'jpeg' => 'image/jpeg',
+            'gif'  => 'image/gif',
+            'svg'  => 'image/svg+xml',
+            'css'  => 'text/css',
+            'js'   => 'text/javascript'
+        ];
+        $contentType = $mimeTypes[$ext] ?? (function_exists('mime_content_type') ? mime_content_type($path) : 'application/octet-stream');
+        header('Content-Type: ' . $contentType);
+        readfile($path);
+        exit;
+    }
+}
+
+// 3. Extensionless URL match (e.g. /results -> results.php)
+$phpFile = $path . '.php';
+if (file_exists($phpFile) && is_file($phpFile)) {
+    require_once $phpFile;
+    exit;
+}
+
+// 4. 404 Fallback
+http_response_code(404);
+echo "404 Not Found";
+
