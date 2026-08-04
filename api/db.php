@@ -167,14 +167,15 @@ function dbConnect() {
 
     mysqli_report(MYSQLI_REPORT_OFF);
 
-    // Try MySQL if DB_HOST is set and not localhost
-    $hasCustomHost = (getenv('DB_HOST') && getenv('DB_HOST') !== '127.0.0.1');
+    // Try MySQL if DB_HOST is explicitly configured to a remote/custom host
+    $envHost = getenv('DB_HOST');
+    $hasCustomHost = ($envHost && $envHost !== '127.0.0.1' && $envHost !== 'localhost');
 
     if ($hasCustomHost) {
         try {
             $mysqli = mysqli_init();
             if ($mysqli) {
-                $mysqli->options(MYSQLI_OPT_CONNECT_TIMEOUT, 3);
+                $mysqli->options(MYSQLI_OPT_CONNECT_TIMEOUT, 1);
                 $flags = 0;
                 $hostLower = strtolower($dbHost);
                 if (getenv('DB_SSL') === 'true' || strpos($hostLower, 'aiven') !== false || strpos($hostLower, 'tidb') !== false || strpos($hostLower, 'clever') !== false) {
@@ -204,7 +205,7 @@ function dbConnect() {
         }
     }
 
-    // Zero-Setup SQLite Fallback
+    // Zero-Setup SQLite Fallback (Instant, 0ms latency)
     $dbDir = sys_get_temp_dir();
     $dbFile = $dbDir . '/notice_board.sqlite';
     $sqlite = new SQLiteDB($dbFile);

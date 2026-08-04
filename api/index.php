@@ -1,5 +1,7 @@
 <?php
 // Entry point for Vercel Serverless Function (vercel-php)
+header('X-Content-Type-Options: nosniff');
+
 $requestUri = $_SERVER['REQUEST_URI'] ?? '/';
 $path = parse_url($requestUri, PHP_URL_PATH) ?? '/';
 $path = urldecode(ltrim($path, '/'));
@@ -24,11 +26,15 @@ if (file_exists($phpInApi) && is_file($phpInApi)) {
     exit;
 }
 
-// 4. Check root directory for static assets (like uploads/...)
+// 4. Check root directory for static assets (like uploads/...) or root PHP scripts
 $rootDir = realpath(__DIR__ . '/..');
 $staticFile = $rootDir . '/' . $path;
 if (file_exists($staticFile) && is_file($staticFile)) {
     $ext = strtolower(pathinfo($staticFile, PATHINFO_EXTENSION));
+    if ($ext === 'php') {
+        require_once $staticFile;
+        exit;
+    }
     $mimeTypes = [
         'pdf'  => 'application/pdf',
         'png'  => 'image/png',
