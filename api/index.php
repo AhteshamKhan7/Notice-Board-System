@@ -1,4 +1,5 @@
 <?php
+if (session_status() === PHP_SESSION_NONE) { @ob_start(); }
 // Entry point for Vercel Serverless Function (vercel-php)
 header('X-Content-Type-Options: nosniff');
 

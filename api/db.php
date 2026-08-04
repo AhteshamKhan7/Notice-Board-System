@@ -88,6 +88,8 @@ class SQLiteDB {
         $this->pdo = new PDO('sqlite:' . $dbFile);
         $this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $this->pdo->exec("PRAGMA foreign_keys = ON;");
+        @$this->pdo->exec("PRAGMA journal_mode = WAL;");
+        @$this->pdo->exec("PRAGMA synchronous = NORMAL;");
     }
 
     public function query($sql) {
